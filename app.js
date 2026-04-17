@@ -55,10 +55,21 @@ function init() {
 
   wireEvents();
   refreshFilters();
+  updateFilterVisibility();
   render();
 
   $('#loader').hidden = true;
   $('#sourceInfo').textContent = `Fuentes: ${state.data.sources.map(s => s.file).join(' · ')}`;
+}
+
+function updateFilterVisibility() {
+  const hideType = state.tab === 'productos';
+  $('#typeFilterLabel').style.display = hideType ? 'none' : '';
+  // Si se ocultó el filtro y tenía un valor, resetearlo
+  if (hideType && state.type !== 'all') {
+    state.type = 'all';
+    $('#typeSelect').value = 'all';
+  }
 }
 
 function wireEvents() {
@@ -66,6 +77,7 @@ function wireEvents() {
     state.tab = b.dataset.tab;
     $$('#tabs button').forEach(x => x.classList.toggle('active', x === b));
     $$('.tab-panel').forEach(p => p.classList.toggle('active', p.id === `tab-${state.tab}`));
+    updateFilterVisibility();
     render();
   }));
 
