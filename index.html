@@ -1,0 +1,136 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8" />
+  <title>Dashboard KPIs Panier</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <link rel="stylesheet" href="styles.css" />
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <span class="logo-dot"></span>
+      <div>
+        <h1>KPIs Panier</h1>
+        <p id="subtitle">Dashboard de ventas</p>
+      </div>
+    </div>
+    <nav class="tabs" id="tabs">
+      <button data-tab="resumen" class="active">Resumen</button>
+      <button data-tab="mensual">Mensual</button>
+      <button data-tab="clientes">Clientes</button>
+      <button data-tab="tipos">Tipos de cliente</button>
+      <button data-tab="productos">Productos</button>
+    </nav>
+  </header>
+
+  <section class="filters">
+    <label>
+      Año
+      <select id="yearSelect"></select>
+    </label>
+    <label>
+      Mes
+      <select id="monthSelect">
+        <option value="all">Todos</option>
+      </select>
+    </label>
+    <label class="grow">
+      Buscar
+      <input type="search" id="searchInput" placeholder="Cliente o producto…" />
+    </label>
+    <label>
+      Tipo de cliente
+      <select id="typeSelect"><option value="all">Todos</option></select>
+    </label>
+    <div class="spacer"></div>
+    <span class="source-info" id="sourceInfo"></span>
+  </section>
+
+  <main>
+    <div id="searchMatches" class="search-matches" hidden></div>
+
+    <section id="tab-resumen" class="tab-panel active">
+      <div class="kpi-grid" id="kpiGrid"></div>
+      <div class="chart-grid">
+        <div class="card"><h3>Facturación mensual</h3><canvas id="chartFacturacion"></canvas></div>
+        <div class="card"><h3>Kg vendidos por mes</h3><canvas id="chartKg"></canvas></div>
+        <div class="card"><h3>Pedidos por mes</h3><canvas id="chartPedidos"></canvas></div>
+        <div class="card"><h3>Clientes activos vs nuevos</h3><canvas id="chartClientes"></canvas></div>
+      </div>
+    </section>
+
+    <section id="tab-mensual" class="tab-panel">
+      <div class="card">
+        <h3>Registro mensual general</h3>
+        <div class="table-wrap"><table id="tableMensual"></table></div>
+      </div>
+    </section>
+
+    <section id="tab-clientes" class="tab-panel">
+      <div class="card">
+        <h3>Top clientes</h3>
+        <div class="toolbar">
+          <label>Métrica
+            <select id="clientMetric">
+              <option value="facturacion">Facturación</option>
+              <option value="unidades">Unidades</option>
+              <option value="pedidos">Pedidos</option>
+            </select>
+          </label>
+          <label>Top N
+            <select id="topN">
+              <option>10</option><option selected>15</option><option>25</option><option>50</option>
+            </select>
+          </label>
+        </div>
+        <div class="hbar-wrap" id="wrapTopClients"><canvas id="chartTopClients"></canvas></div>
+      </div>
+      <div class="card">
+        <h3>Detalle por cliente</h3>
+        <div class="table-wrap"><table id="tableClientes"></table></div>
+      </div>
+    </section>
+
+    <section id="tab-tipos" class="tab-panel">
+      <div class="card">
+        <h3>Distribución por tipo de cliente</h3>
+        <canvas id="chartTipos"></canvas>
+      </div>
+      <div class="card">
+        <h3>Detalle por tipo</h3>
+        <div class="table-wrap"><table id="tableTipos"></table></div>
+      </div>
+    </section>
+
+    <section id="tab-productos" class="tab-panel">
+      <div class="card">
+        <h3>Productos — unidades y kg</h3>
+        <div class="toolbar">
+          <label>Métrica
+            <select id="productMetric">
+              <option value="kg">Kg</option>
+              <option value="unidades">Unidades</option>
+            </select>
+          </label>
+          <label>Categoría
+            <select id="categorySelect"><option value="all">Todas</option></select>
+          </label>
+        </div>
+        <div class="hbar-wrap" id="wrapProductos"><canvas id="chartProductos"></canvas></div>
+      </div>
+      <div class="card">
+        <h3>Detalle por producto</h3>
+        <div class="table-wrap"><table id="tableProductos"></table></div>
+      </div>
+    </section>
+  </main>
+
+  <div id="loader" class="loader">Cargando datos…</div>
+  <div id="error" class="error" hidden></div>
+
+  <script src="data.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
