@@ -4,10 +4,18 @@ const fmtAR = new Intl.NumberFormat('es-AR', { maximumFractionDigits: 2 });
 const fmtMoney = new Intl.NumberFormat('es-AR', { style: 'currency', currency: 'ARS', maximumFractionDigits: 0 });
 const fmtInt = new Intl.NumberFormat('es-AR', { maximumFractionDigits: 0 });
 
+const QUARTERS = {
+  Q1: [0, 1, 2],
+  Q2: [3, 4, 5],
+  Q3: [6, 7, 8],
+  Q4: [9, 10, 11],
+};
+
 const state = {
   data: null,
   year: null,
   month: 'all',
+  quarter: 'all',
   search: '',
   type: 'all',
   category: 'all',
@@ -82,6 +90,7 @@ function wireEvents() {
   }));
 
   $('#yearSelect').addEventListener('change', e => { state.year = e.target.value; refreshFilters(); render(); });
+  $('#quarterSelect').addEventListener('change', e => { state.quarter = e.target.value; render(); });
   $('#monthSelect').addEventListener('change', e => { state.month = e.target.value; render(); });
   $('#searchInput').addEventListener('input', e => { state.search = e.target.value.toLowerCase(); render(); });
   $('#typeSelect').addEventListener('change', e => { state.type = e.target.value; render(); });
@@ -120,8 +129,12 @@ function refreshFilters() {
 }
 
 function monthFilterArray() {
-  if (state.month === 'all') return Array.from({length:12}, (_,i)=>i);
-  return [Number(state.month)];
+  const base = state.quarter !== 'all' && QUARTERS[state.quarter]
+    ? QUARTERS[state.quarter]
+    : Array.from({ length: 12 }, (_, i) => i);
+  if (state.month === 'all') return base;
+  const m = Number(state.month);
+  return base.includes(m) ? [m] : [];
 }
 
 // === Render ===
@@ -158,12 +171,20 @@ function renderResumen() {
     if (state.data.years[prevYear]) {
       const mgPrev = state.data.years[prevYear].monthlyGeneral || [];
       const prevFiltered = mgPrev.filter(r => months.includes(r.monthIndex));
-      const prevFact = prevFiltered.reduce((a, r) => a + (Number(r['Facturación']) || 0), 0);
-      if (prevFact > 0) {
-        const delta = ((sum('Facturación') - prevFact) / prevFact) * 100;
-        kpis[0].delta = `${delta >= 0 ? '▲' : '▼'} ${fmtAR.format(Math.abs(delta))}% vs ${prevYear}`;
-        kpis[0].deltaClass = delta >= 0 ? 'up' : 'down';
-      }
+      const sumPrev = (key) => prevFiltered.reduce((a, r) => a + (Number(r[key]) || 0), 0);
+      const deltaSpecs = [
+        { idx: 0, key: 'Facturación' },
+        { idx: 1, key: 'Kg Vendidos' },
+        { idx: 2, key: 'Pedidos del mes' },
+      ];
+      deltaSpecs.forEach(({ idx, key }) => {
+        const prev = sumPrev(key);
+        if (prev > 0) {
+          const delta = ((sum(key) - prev) / prev) * 100;
+          kpis[idx].delta = `${delta >= 0 ? '▲' : '▼'} ${fmtAR.format(Math.abs(delta))}% vs ${prevYear}`;
+          kpis[idx].deltaClass = delta >= 0 ? 'up' : 'down';
+        }
+      });
     }
     renderKpiGrid(kpis);
 
@@ -172,9 +193,27 @@ function renderResumen() {
       const row = mg.find(r => r.monthIndex === i);
       return row ? Number(row[key]) || 0 : 0;
     });
-    drawBar('chartFacturacion', labels, [{ label: 'Facturación', data: pick('Facturación'), color: '#7c8cff' }], { money: true });
-    drawBar('chartKg', labels, [{ label: 'Kg', data: pick('Kg Vendidos'), color: '#4bd6b0' }]);
-    drawBar('chartPedidos', labels, [{ label: 'Pedidos', data: pick('Pedidos del mes'), color: '#ffb457' }]);
+    const prevMgData = state.data.years[prevYear]?.monthlyGeneral || null;
+    const pickPrev = (key) => months.map(i => {
+      if (!prevMgData) return 0;
+      const row = prevMgData.find(r => r.monthIndex === i);
+      return row ? Number(row[key]) || 0 : 0;
+    });
+    const prevDs = (label, key, color) => prevMgData
+      ? [{ label: `${label} ${prevYear}`, data: pickPrev(key), color, muted: true }]
+      : [];
+    drawBar('chartFacturacion', labels, [
+      { label: `Facturación ${state.year}`, data: pick('Facturación'), color: '#7c8cff' },
+      ...prevDs('Facturación', 'Facturación', '#7c8cff'),
+    ], { money: true });
+    drawBar('chartKg', labels, [
+      { label: `Kg ${state.year}`, data: pick('Kg Vendidos'), color: '#4bd6b0' },
+      ...prevDs('Kg', 'Kg Vendidos', '#4bd6b0'),
+    ]);
+    drawBar('chartPedidos', labels, [
+      { label: `Pedidos ${state.year}`, data: pick('Pedidos del mes'), color: '#ffb457' },
+      ...prevDs('Pedidos', 'Pedidos del mes', '#ffb457'),
+    ]);
     drawLine('chartClientes', labels, [
       { label: 'Activos', data: pick('Clientes activos'), color: '#7c8cff' },
       { label: 'Nuevos', data: pick('Nuevos clientes'), color: '#4bd6b0' },
@@ -276,6 +315,7 @@ function renderResumen() {
 
     // Comparación vs año anterior con mismos filtros
     const prevYear = String(Number(state.year) - 1);
+    let prevMonthlyFact = null, prevMonthlyKg = null, prevMonthlyPed = null;
     if (state.data.years[prevYear]) {
       const prevY = state.data.years[prevYear];
       const prevTypeMap = new Map();
@@ -284,30 +324,59 @@ function renderResumen() {
       let prevClients = prevAllClients.slice();
       if (state.type !== 'all') prevClients = prevClients.filter(c => (prevTypeMap.get(c.cliente) || 'Sin clasificar') === state.type);
       if (state.search) prevClients = prevClients.filter(c => c.cliente.toLowerCase().includes(state.search));
-      let prevFact = months.reduce((a, i) => a + prevClients.reduce((s, c) => s + (c.byMonth[i]?.facturacion || 0), 0), 0);
-      // Si no hay facturación directa en año anterior, estimar también
-      if (prevFact === 0 && prevClients.length > 0) {
-        const prevMg = prevY.monthlyGeneral || [];
-        prevFact = months.reduce((a, mi) => {
-          const filtUni = prevClients.reduce((s, c) => s + (c.byMonth[mi]?.unidades || 0), 0);
-          const totUni = prevAllClients.reduce((s, c) => s + (c.byMonth[mi]?.unidades || 0), 0);
-          const mgRow = prevMg.find(r => r.monthIndex === mi);
-          const mgFact = mgRow ? Number(mgRow['Facturación']) || 0 : 0;
-          return a + (totUni > 0 ? (filtUni / totUni) * mgFact : 0);
-        }, 0);
-      }
-      if (prevFact > 0) {
-        const delta = ((totalFact - prevFact) / prevFact) * 100;
-        kpis[0].delta = `${delta >= 0 ? '▲' : '▼'} ${fmtAR.format(Math.abs(delta))}% vs ${prevYear}`;
-        kpis[0].deltaClass = delta >= 0 ? 'up' : 'down';
-      }
+      const prevMg = prevY.monthlyGeneral || [];
+      const prevRatioByMonth = months.map(mi => {
+        const filtUni = prevClients.reduce((s, c) => s + (c.byMonth[mi]?.unidades || 0), 0);
+        const totUni = prevAllClients.reduce((s, c) => s + (c.byMonth[mi]?.unidades || 0), 0);
+        return totUni > 0 ? filtUni / totUni : 0;
+      });
+      const prevDirectFact = months.reduce((a, i) => a + prevClients.reduce((s, c) => s + (c.byMonth[i]?.facturacion || 0), 0), 0);
+      prevMonthlyFact = months.map((mi, idx) => {
+        if (prevDirectFact > 0) {
+          return prevClients.reduce((s, c) => s + (c.byMonth[mi]?.facturacion || 0), 0);
+        }
+        const mgRow = prevMg.find(r => r.monthIndex === mi);
+        const mgFact = mgRow ? Number(mgRow['Facturación']) || 0 : 0;
+        return prevRatioByMonth[idx] * mgFact;
+      });
+      prevMonthlyPed = months.map(i => prevClients.reduce((s, c) => s + (c.byMonth[i]?.pedidos || 0), 0));
+      prevMonthlyKg = months.map((mi, idx) => {
+        const mgRow = prevMg.find(r => r.monthIndex === mi);
+        const mgKg = mgRow ? Number(mgRow['Kg Vendidos']) || 0 : 0;
+        return prevRatioByMonth[idx] * mgKg;
+      });
+      const prevFact = prevMonthlyFact.reduce((a, v) => a + v, 0);
+      const prevPed = prevMonthlyPed.reduce((a, v) => a + v, 0);
+      const prevKg = prevMonthlyKg.reduce((a, v) => a + v, 0);
+      const setDelta = (idx, curr, prev) => {
+        if (prev > 0) {
+          const delta = ((curr - prev) / prev) * 100;
+          kpis[idx].delta = `${delta >= 0 ? '▲' : '▼'} ${fmtAR.format(Math.abs(delta))}% vs ${prevYear}`;
+          kpis[idx].deltaClass = delta >= 0 ? 'up' : 'down';
+        }
+      };
+      setDelta(0, totalFact, prevFact);
+      setDelta(1, totalKg, prevKg);
+      setDelta(2, totalPed, prevPed);
     }
     renderKpiGrid(kpis);
 
     const labels = months.map(i => MONTHS_SHORT[i]);
-    drawBar('chartFacturacion', labels, [{ label: 'Facturación', data: monthlyFact, color: '#7c8cff' }], { money: true });
-    drawBar('chartKg', labels, [{ label: 'Kg', data: monthlyKg, color: '#4bd6b0' }]);
-    drawBar('chartPedidos', labels, [{ label: 'Pedidos', data: monthlyAgg.map(m => m.pedidos), color: '#ffb457' }]);
+    const prevDs = (label, data, color) => prevMonthlyFact
+      ? [{ label: `${label} ${prevYear}`, data, color, muted: true }]
+      : [];
+    drawBar('chartFacturacion', labels, [
+      { label: `Facturación ${state.year}`, data: monthlyFact, color: '#7c8cff' },
+      ...(prevMonthlyFact ? prevDs('Facturación', prevMonthlyFact, '#7c8cff') : []),
+    ], { money: true });
+    drawBar('chartKg', labels, [
+      { label: `Kg ${state.year}`, data: monthlyKg, color: '#4bd6b0' },
+      ...(prevMonthlyKg ? prevDs('Kg', prevMonthlyKg, '#4bd6b0') : []),
+    ]);
+    drawBar('chartPedidos', labels, [
+      { label: `Pedidos ${state.year}`, data: monthlyAgg.map(m => m.pedidos), color: '#ffb457' },
+      ...(prevMonthlyPed ? prevDs('Pedidos', prevMonthlyPed, '#ffb457') : []),
+    ]);
     drawLine('chartClientes', labels, [
       { label: 'Activos', data: monthlyAgg.map(m => m.clientesActivos), color: '#7c8cff' },
     ]);
@@ -655,7 +724,15 @@ function drawBar(id, labels, datasets, extra = {}) {
   const ctx = document.getElementById(id).getContext('2d');
   charts[id] = new Chart(ctx, {
     type: 'bar',
-    data: { labels, datasets: datasets.map(d => ({ label: d.label, data: d.data, backgroundColor: d.color + 'cc', borderColor: d.color, borderWidth: 1, borderRadius: 6 })) },
+    data: { labels, datasets: datasets.map(d => ({
+      label: d.label,
+      data: d.data,
+      backgroundColor: d.color + (d.muted ? '33' : 'cc'),
+      borderColor: d.color + (d.muted ? '66' : ''),
+      borderWidth: d.muted ? 0 : 1,
+      borderRadius: 6,
+      order: d.muted ? 2 : 1,
+    })) },
     options: chartOpts(extra),
   });
 }
