@@ -552,8 +552,19 @@ function renderProductos() {
   const y = currentYearData();
   let src = y.products || [];
   const months = monthFilterArray();
+
+  // Filtro de categoría
   if (state.category !== 'all') src = src.filter(p => (p.categoria || '—') === state.category);
-  if (state.search) src = src.filter(p => p.producto.toLowerCase().includes(state.search) || (p.categoria||'').toLowerCase().includes(state.search));
+
+  // Filtro de búsqueda: aplicar solo si matchea productos o categorías.
+  // Si el texto busca un cliente (no matchea productos), no vaciar la lista.
+  if (state.search) {
+    const matched = src.filter(p =>
+      p.producto.toLowerCase().includes(state.search) ||
+      (p.categoria || '').toLowerCase().includes(state.search)
+    );
+    if (matched.length > 0) src = matched;
+  }
 
   const list = src.map(p => {
     const total = months.reduce((a, i) => a + (p.byMonth[i]?.[state.productMetric] || 0), 0);
@@ -561,6 +572,17 @@ function renderProductos() {
     const kg = months.reduce((a, i) => a + (p.byMonth[i]?.kg || 0), 0);
     return { categoria: p.categoria || '—', producto: p.producto, total, unidades, kg };
   }).sort((a, b) => b.total - a.total);
+
+  // Actualizar dropdown de categorías según productos visibles
+  const visibleCats = new Set(list.map(p => p.categoria));
+  const cSel = $('#categorySelect');
+  const allCats = new Set((y.products || []).map(p => p.categoria || '—'));
+  cSel.innerHTML = '<option value="all">Todas</option>' +
+    [...allCats].sort().map(c => {
+      const disabled = !visibleCats.has(c) && state.category === 'all';
+      return `<option value="${c}" ${disabled ? 'class="dimmed"' : ''}>${c}${disabled ? ' (sin resultados)' : ''}</option>`;
+    }).join('');
+  cSel.value = state.category;
 
   const prodMetricLabels = { kg: 'Kg', unidades: 'Unidades' };
   drawHBar('chartProductos', list.slice(0, 20).map(p => p.producto),
