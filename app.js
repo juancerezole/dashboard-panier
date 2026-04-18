@@ -143,6 +143,7 @@ function render() {
   const months = monthFilterArray();
   renderSearchMatches(y, months);
   renderResumen();
+  renderAnalisis();
   renderMensual();
   renderClientes();
   renderTipos();
@@ -442,6 +443,344 @@ function renderKpiGrid(kpis) {
       <div class="value">${k.value}</div>
       ${k.delta ? `<div class="delta ${k.deltaClass||''}">${k.delta}</div>` : ''}
     </div>`).join('');
+}
+
+// === Análisis y proyecciones ===
+function renderAnalisis() {
+  const container = $('#analisisSection');
+  if (!container) return;
+
+  const y = currentYearData();
+  const prevYear = String(Number(state.year) - 1);
+  const prevY = state.data.years[prevYear];
+  const mg = y.monthlyGeneral || [];
+  const mgPrev = prevY ? (prevY.monthlyGeneral || []) : [];
+  const num = v => (v == null ? 0 : Number(v) || 0);
+  const hasValue = r => r && r['Facturación'] != null && Number(r['Facturación']) > 0;
+
+  const completed = mg.filter(hasValue).sort((a, b) => a.monthIndex - b.monthIndex);
+
+  if (!completed.length) {
+    container.innerHTML = `<div class="card"><h3>Análisis y proyecciones</h3>
+      <p style="color:var(--muted);margin:0;">Sin meses registrados en el año ${state.year}.</p></div>`;
+    return;
+  }
+  if (!prevY || !mgPrev.length) {
+    container.innerHTML = `<div class="card"><h3>Análisis y proyecciones</h3>
+      <p style="color:var(--muted);margin:0;">No hay datos de ${prevYear} para comparar ni proyectar.</p></div>`;
+    return;
+  }
+
+  const metrics = [
+    { key: 'Facturación', label: 'Facturación', fmt: fmtMoney, money: true },
+    { key: 'Kg Vendidos', label: 'Kg vendidos', fmt: fmtAR, money: false },
+    { key: 'Pedidos del mes', label: 'Pedidos', fmt: fmtInt, money: false },
+    { key: 'Clientes activos', label: 'Clientes activos', fmt: fmtInt, money: false, avg: true },
+  ];
+
+  // Último mes completado
+  const last = completed[completed.length - 1];
+  const lastIdx = last.monthIndex;
+  const prevSame = mgPrev.find(r => r.monthIndex === lastIdx);
+
+  const monthCmpHTML = metrics.map(m => {
+    const curr = num(last[m.key]);
+    const prev = prevSame ? num(prevSame[m.key]) : 0;
+    return rowHTML(m, curr, prev, state.year, prevYear);
+  }).join('');
+
+  // YTD: meses completados vs mismo período año anterior
+  const completedIdxs = completed.map(r => r.monthIndex);
+  const prevSamePeriod = mgPrev.filter(r => completedIdxs.includes(r.monthIndex));
+  const ytdCurr = {}, ytdPrev = {};
+  metrics.forEach(m => {
+    const sumC = completed.reduce((a, r) => a + num(r[m.key]), 0);
+    const sumP = prevSamePeriod.reduce((a, r) => a + num(r[m.key]), 0);
+    ytdCurr[m.key] = m.avg ? sumC / (completed.length || 1) : sumC;
+    ytdPrev[m.key] = m.avg ? sumP / (prevSamePeriod.length || 1) : sumP;
+  });
+
+  const ytdHTML = metrics.map(m => rowHTML(m, ytdCurr[m.key], ytdPrev[m.key], state.year, prevYear)).join('');
+
+  // Tasas de crecimiento (acumulada y reciente)
+  const growthYTD = {}, growthRecent = {}, growthCombined = {};
+  metrics.forEach(m => {
+    growthYTD[m.key] = ytdPrev[m.key] > 0 ? (ytdCurr[m.key] / ytdPrev[m.key]) - 1 : 0;
+  });
+  const recentCount = Math.min(3, completed.length);
+  const recentCurr = completed.slice(-recentCount);
+  const recentIdxs = recentCurr.map(r => r.monthIndex);
+  const recentPrev = mgPrev.filter(r => recentIdxs.includes(r.monthIndex));
+  metrics.forEach(m => {
+    const cs = recentCurr.reduce((a, r) => a + num(r[m.key]), 0);
+    const ps = recentPrev.reduce((a, r) => a + num(r[m.key]), 0);
+    growthRecent[m.key] = ps > 0 ? (cs / ps) - 1 : growthYTD[m.key];
+  });
+  // Crecimiento combinado: 60% tendencia reciente + 40% acumulada anual
+  metrics.forEach(m => {
+    growthCombined[m.key] = growthRecent[m.key] * 0.6 + growthYTD[m.key] * 0.4;
+  });
+
+  // Proyección meses restantes: mes_año_anterior × (1 + crecimiento combinado)
+  const projections = [];
+  for (let i = 0; i < 12; i++) {
+    if (completedIdxs.includes(i)) continue;
+    const prevRow = mgPrev.find(r => r.monthIndex === i);
+    if (!prevRow) continue;
+    const proj = { monthIndex: i };
+    metrics.forEach(m => {
+      const basePrev = num(prevRow[m.key]);
+      proj[m.key] = basePrev * (1 + growthCombined[m.key]);
+    });
+    projections.push(proj);
+  }
+
+  // Cierre de año: real + proyectado
+  const yearEnd = {}, yearPrevTotal = {};
+  metrics.forEach(m => {
+    if (m.avg) {
+      const reals = completed.map(r => num(r[m.key]));
+      const projs = projections.map(p => p[m.key]);
+      const combined = [...reals, ...projs];
+      yearEnd[m.key] = combined.length ? combined.reduce((a, v) => a + v, 0) / combined.length : 0;
+      const allPrev = mgPrev.map(r => num(r[m.key])).filter(v => v > 0);
+      yearPrevTotal[m.key] = allPrev.length ? allPrev.reduce((a, v) => a + v, 0) / allPrev.length : 0;
+    } else {
+      yearEnd[m.key] = completed.reduce((a, r) => a + num(r[m.key]), 0) + projections.reduce((a, p) => a + p[m.key], 0);
+      yearPrevTotal[m.key] = mgPrev.reduce((a, r) => a + num(r[m.key]), 0);
+    }
+  });
+  const projHTML = metrics.map(m => rowHTML(m, yearEnd[m.key], yearPrevTotal[m.key], `${state.year} (proy.)`, prevYear)).join('');
+
+  // Insights clave derivados de todas las fuentes
+  const insights = buildInsights({
+    y, prevY, completed, projections, mgPrev,
+    ytdCurr, ytdPrev, yearEnd, yearPrevTotal,
+    growthYTD, growthRecent, growthCombined,
+    prevYear, lastIdx,
+  });
+
+  // Render HTML
+  const methodNote = `Proyección basada en la estacionalidad del año anterior ajustada por el crecimiento de ${state.year} (60% tendencia últimos ${recentCount} ${recentCount === 1 ? 'mes' : 'meses'} + 40% acumulado anual).`;
+
+  container.innerHTML = `
+    <div class="analisis-header">
+      <h2>Análisis y proyecciones</h2>
+      <p>Basado en ${completed.length} ${completed.length === 1 ? 'mes registrado' : 'meses registrados'} de ${state.year} vs ${prevYear}</p>
+    </div>
+    <div class="analysis-grid">
+      <div class="card analysis-card">
+        <h3>Último mes registrado <span class="badge">${MONTHS_LONG[lastIdx]} ${state.year}</span></h3>
+        <div class="cmp-list">${monthCmpHTML}</div>
+      </div>
+      <div class="card analysis-card">
+        <h3>Acumulado del año <span class="badge">Ene – ${MONTHS_LONG[lastIdx]}</span></h3>
+        <div class="cmp-list">${ytdHTML}</div>
+      </div>
+      <div class="card analysis-card">
+        <h3>Proyección cierre <span class="badge">${state.year}</span></h3>
+        <div class="cmp-list">${projHTML}</div>
+        <p class="analysis-note">${methodNote}</p>
+      </div>
+    </div>
+    <div class="card projection-wrap">
+      <h3>Proyección mensual de facturación</h3>
+      <canvas id="chartProyeccion"></canvas>
+      <div class="legend-note">
+        <span class="dot-real">Real ${state.year}</span>
+        <span class="dot-proj">Proyectado ${state.year}</span>
+        <span class="dot-prev">${prevYear}</span>
+      </div>
+    </div>
+    <div class="card">
+      <h3>Insights clave</h3>
+      <ul class="insights">${insights.map(i => `<li>${i}</li>`).join('')}</ul>
+    </div>
+  `;
+
+  drawProjection({
+    labels: MONTHS_SHORT,
+    completed, projections, mgPrev,
+    prevYear,
+  });
+}
+
+function rowHTML(m, curr, prev, currLabel, prevLabel) {
+  const delta = prev > 0 ? ((curr - prev) / prev) * 100 : null;
+  const deltaClass = delta == null ? '' : (delta >= 0 ? 'up' : 'down');
+  const deltaTxt = delta == null ? 's/d' : `${delta >= 0 ? '▲' : '▼'} ${fmtAR.format(Math.abs(delta))}%`;
+  return `
+    <div class="cmp-row">
+      <div class="cmp-label">${m.label}</div>
+      <div class="cmp-vals">
+        <div><span class="cmp-year">${currLabel}</span><strong>${m.fmt.format(curr)}</strong></div>
+        <div><span class="cmp-year">${prevLabel}</span><span class="cmp-prev">${m.fmt.format(prev)}</span></div>
+      </div>
+      <div class="cmp-delta ${deltaClass}">${deltaTxt}</div>
+    </div>`;
+}
+
+function buildInsights(ctx) {
+  const {
+    y, prevY, completed, projections, mgPrev,
+    ytdCurr, ytdPrev, yearEnd, yearPrevTotal,
+    growthYTD, growthRecent, growthCombined,
+    prevYear, lastIdx,
+  } = ctx;
+  const num = v => (v == null ? 0 : Number(v) || 0);
+  const out = [];
+
+  const pct = x => `${x >= 0 ? '+' : ''}${fmtAR.format(x * 100)}%`;
+  const dir = (x, pos = 'up', neg = 'down') => `<span class="${x >= 0 ? pos : neg}">${pct(x)}</span>`;
+
+  // 1. Tendencia general facturación
+  const gComb = growthCombined['Facturación'];
+  const gYTD = growthYTD['Facturación'];
+  const gRec = growthRecent['Facturación'];
+  out.push(`Facturación acumulada ${dir(gYTD)} vs ${prevYear} (${fmtMoney.format(ytdCurr['Facturación'])} contra ${fmtMoney.format(ytdPrev['Facturación'])}). ` +
+           `Tendencia reciente ${dir(gRec)}. Proyección de cierre de año: <strong>${fmtMoney.format(yearEnd['Facturación'])}</strong> (${dir((yearEnd['Facturación'] - yearPrevTotal['Facturación']) / (yearPrevTotal['Facturación'] || 1))} vs ${prevYear}).`);
+
+  // 2. Volumen (kg) y pedidos
+  out.push(`Volumen vendido: <strong>${fmtAR.format(ytdCurr['Kg Vendidos'])} kg</strong> vs ${fmtAR.format(ytdPrev['Kg Vendidos'])} kg en ${prevYear} (${dir(growthYTD['Kg Vendidos'])}). ` +
+           `Pedidos: <strong>${fmtInt.format(ytdCurr['Pedidos del mes'])}</strong> vs ${fmtInt.format(ytdPrev['Pedidos del mes'])} (${dir(growthYTD['Pedidos del mes'])}).`);
+
+  // 3. Ticket promedio (facturación / pedido)
+  const ticketCurr = ytdCurr['Pedidos del mes'] > 0 ? ytdCurr['Facturación'] / ytdCurr['Pedidos del mes'] : 0;
+  const ticketPrev = ytdPrev['Pedidos del mes'] > 0 ? ytdPrev['Facturación'] / ytdPrev['Pedidos del mes'] : 0;
+  const ticketDelta = ticketPrev > 0 ? (ticketCurr / ticketPrev) - 1 : 0;
+  const kgPorPed = ytdCurr['Pedidos del mes'] > 0 ? ytdCurr['Kg Vendidos'] / ytdCurr['Pedidos del mes'] : 0;
+  const kgPorPedPrev = ytdPrev['Pedidos del mes'] > 0 ? ytdPrev['Kg Vendidos'] / ytdPrev['Pedidos del mes'] : 0;
+  const kgPedDelta = kgPorPedPrev > 0 ? (kgPorPed / kgPorPedPrev) - 1 : 0;
+  out.push(`Ticket promedio por pedido: <strong>${fmtMoney.format(ticketCurr)}</strong> (${dir(ticketDelta)} vs ${fmtMoney.format(ticketPrev)}). ` +
+           `Tamaño promedio por pedido: <strong>${fmtAR.format(kgPorPed)} kg</strong> (${dir(kgPedDelta)}).`);
+
+  // 4. Base de clientes: activos, nuevos, reactivados, pérdidas
+  const nuevos = completed.reduce((a, r) => a + num(r['Nuevos clientes']), 0);
+  const reactiv = completed.reduce((a, r) => a + num(r['Clientes reactivados']), 0);
+  const perdidos = completed.reduce((a, r) => a + num(r['Clientes que no compran mas']), 0);
+  const nuevosPrev = mgPrev.filter(r => completed.some(c => c.monthIndex === r.monthIndex))
+    .reduce((a, r) => a + num(r['Nuevos clientes']), 0);
+  const activosProm = ytdCurr['Clientes activos'];
+  const activosPromPrev = ytdPrev['Clientes activos'];
+  const saldoNeto = nuevos + reactiv - perdidos;
+  out.push(`Base de clientes activos (promedio mensual): <strong>${fmtInt.format(activosProm)}</strong> (${dir(growthYTD['Clientes activos'])} vs ${fmtInt.format(activosPromPrev)}). ` +
+           `En lo que va del año se incorporaron <strong>${nuevos}</strong> nuevos${nuevosPrev > 0 ? ` (${dir((nuevos - nuevosPrev) / nuevosPrev)} vs ${nuevosPrev} en ${prevYear})` : ''}, ` +
+           `${reactiv} reactivados y ${perdidos} dados de baja. Saldo neto: <strong class="${saldoNeto >= 0 ? 'up' : 'down'}">${saldoNeto >= 0 ? '+' : ''}${saldoNeto}</strong>.`);
+
+  // 5. Mejor y peor mes del año en curso
+  let best = completed[0], worst = completed[0];
+  completed.forEach(r => {
+    if (num(r['Facturación']) > num(best['Facturación'])) best = r;
+    if (num(r['Facturación']) < num(worst['Facturación'])) worst = r;
+  });
+  out.push(`Mejor mes hasta ahora: <strong>${MONTHS_LONG[best.monthIndex]}</strong> con ${fmtMoney.format(num(best['Facturación']))}. ` +
+           `Mes más bajo: ${MONTHS_LONG[worst.monthIndex]} con ${fmtMoney.format(num(worst['Facturación']))}.`);
+
+  // 6. Mes con mayor proyección y estacionalidad
+  if (projections.length) {
+    const bestProj = projections.reduce((b, p) => b && num(b['Facturación']) > p['Facturación'] ? b : p, null);
+    const worstProj = projections.reduce((w, p) => w && num(w['Facturación']) < p['Facturación'] ? w : p, null);
+    out.push(`Meses con mejor proyección: <strong>${MONTHS_LONG[bestProj.monthIndex]}</strong> (${fmtMoney.format(bestProj['Facturación'])}) y ` +
+             `más bajo proyectado: ${MONTHS_LONG[worstProj.monthIndex]} (${fmtMoney.format(worstProj['Facturación'])}).`);
+  }
+
+  // 7. Top producto y categoría (de Excel de productos)
+  const products = y.products || [];
+  if (products.length) {
+    const prodAgg = products.map(p => ({
+      producto: p.producto,
+      categoria: p.categoria || '—',
+      kg: (p.byMonth || []).reduce((a, m) => a + num(m?.kg), 0),
+      uni: (p.byMonth || []).reduce((a, m) => a + num(m?.unidades), 0),
+    }));
+    const totalKg = prodAgg.reduce((a, p) => a + p.kg, 0) || 1;
+    const topProd = prodAgg.slice().sort((a, b) => b.kg - a.kg)[0];
+    const catMap = new Map();
+    prodAgg.forEach(p => catMap.set(p.categoria, (catMap.get(p.categoria) || 0) + p.kg));
+    const topCat = [...catMap.entries()].sort((a, b) => b[1] - a[1])[0];
+    if (topProd && topProd.kg > 0) {
+      out.push(`Producto líder del año: <strong>${topProd.producto}</strong> con ${fmtAR.format(topProd.kg)} kg (${fmtAR.format((topProd.kg / totalKg) * 100)}% del total). ` +
+               (topCat ? `Categoría dominante: <strong>${topCat[0]}</strong> con ${fmtAR.format(topCat[1])} kg (${fmtAR.format((topCat[1] / totalKg) * 100)}%).` : ''));
+    }
+  }
+
+  // 8. Concentración de clientes (Top 10)
+  const byClient = y.byClient || [];
+  if (byClient.length) {
+    const rank = byClient.map(c => ({
+      cliente: c.cliente,
+      uni: (c.byMonth || []).reduce((a, m) => a + num(m?.unidades), 0),
+      fact: (c.byMonth || []).reduce((a, m) => a + num(m?.facturacion), 0),
+    })).sort((a, b) => b.uni - a.uni);
+    const top10 = rank.slice(0, 10);
+    const top10Uni = top10.reduce((a, c) => a + c.uni, 0);
+    const totalUni = rank.reduce((a, c) => a + c.uni, 0) || 1;
+    const conc = (top10Uni / totalUni) * 100;
+    out.push(`Concentración: los <strong>top 10 clientes</strong> representan el <strong>${fmtAR.format(conc)}%</strong> de las unidades del año. ` +
+             `Cliente principal: <strong>${top10[0].cliente}</strong> (${fmtAR.format((top10[0].uni / totalUni) * 100)}% del total).`);
+  }
+
+  // 9. Distribución por tipo de cliente (si hay datos)
+  const byType = y.byClientType || prevY.byClientType || [];
+  if (byType.length) {
+    const typeMap = new Map();
+    byType.forEach(c => typeMap.set(c.cliente, c.tipo || 'Sin clasificar'));
+    const typeAgg = new Map();
+    byClient.forEach(c => {
+      const t = typeMap.get(c.cliente) || 'Sin clasificar';
+      const u = (c.byMonth || []).reduce((a, m) => a + num(m?.unidades), 0);
+      typeAgg.set(t, (typeAgg.get(t) || 0) + u);
+    });
+    const totU = [...typeAgg.values()].reduce((a, v) => a + v, 0) || 1;
+    const tipos = [...typeAgg.entries()].sort((a, b) => b[1] - a[1]).slice(0, 3);
+    if (tipos.length) {
+      out.push(`Mix por tipo de cliente: ` + tipos.map(t => `<strong>${t[0]}</strong> ${fmtAR.format((t[1] / totU) * 100)}%`).join(' · ') + '.');
+    }
+  }
+
+  // 10. Evaluación final / recomendación
+  let verdict;
+  if (gComb >= 0.15) verdict = `El año avanza con <span class="up">crecimiento fuerte</span>; el ritmo actual proyecta superar cómodamente a ${prevYear}.`;
+  else if (gComb >= 0.05) verdict = `El año avanza con <span class="up">crecimiento moderado</span> sobre ${prevYear}; conviene sostener las acciones que lo impulsan.`;
+  else if (gComb >= -0.05) verdict = `El año avanza <strong>en línea</strong> con ${prevYear}; cierre estimado similar al del año anterior.`;
+  else if (gComb >= -0.15) verdict = `El año muestra una <span class="down">leve caída</span> frente a ${prevYear}; revisar clientes con baja actividad y mix de productos.`;
+  else verdict = `El año presenta una <span class="down">caída importante</span> vs ${prevYear}; se recomienda priorizar plan de recuperación comercial.`;
+  out.push(verdict);
+
+  return out;
+}
+
+function drawProjection({ labels, completed, projections, mgPrev, prevYear }) {
+  destroyChart('chartProyeccion');
+  const num = v => (v == null ? 0 : Number(v) || 0);
+  const real = labels.map((_, i) => {
+    const r = completed.find(c => c.monthIndex === i);
+    return r ? num(r['Facturación']) : null;
+  });
+  const proj = labels.map((_, i) => {
+    const p = projections.find(p => p.monthIndex === i);
+    return p ? p['Facturación'] : null;
+  });
+  const prev = labels.map((_, i) => {
+    const r = mgPrev.find(r => r.monthIndex === i);
+    return r ? num(r['Facturación']) : 0;
+  });
+
+  const canvas = document.getElementById('chartProyeccion');
+  if (!canvas) return;
+  const ctx = canvas.getContext('2d');
+  charts['chartProyeccion'] = new Chart(ctx, {
+    type: 'bar',
+    data: {
+      labels,
+      datasets: [
+        { label: `Real ${state.year}`, data: real, backgroundColor: '#7c8cffcc', borderColor: '#7c8cff', borderWidth: 1, borderRadius: 6, order: 2 },
+        { label: `Proyectado ${state.year}`, data: proj, backgroundColor: 'rgba(124,140,255,.25)', borderColor: '#7c8cff', borderWidth: 1.5, borderDash: [6, 4], borderRadius: 6, order: 2 },
+        { label: `${prevYear}`, data: prev, type: 'line', borderColor: '#ffb457', backgroundColor: 'rgba(255,180,87,.08)', tension: .3, pointRadius: 3, borderWidth: 2, fill: false, order: 1 },
+      ],
+    },
+    options: chartOpts({ money: true }),
+  });
 }
 
 function renderMensual() {
