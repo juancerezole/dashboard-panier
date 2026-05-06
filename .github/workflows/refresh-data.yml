@@ -1,0 +1,47 @@
+name: Refrescar dashboard
+
+# Solo se dispara manualmente (desde el botón del dashboard o desde GitHub UI).
+on:
+  workflow_dispatch:
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - run: npm ci
+
+      - name: Crear service-account.json desde secret
+        run: |
+          cat > service-account.json <<'JSON'
+          ${{ secrets.GOOGLE_SERVICE_ACCOUNT_KEY }}
+          JSON
+
+      - name: Generar data.json
+        env:
+          GOOGLE_DRIVE_FOLDER_ID: ${{ secrets.GOOGLE_DRIVE_FOLDER_ID }}
+          GOOGLE_SERVICE_ACCOUNT_KEY_FILE: ./service-account.json
+        run: node build-data.js
+
+      - name: Subir data.json y data.js a Hostinger por FTP
+        env:
+          FTP_HOST: ${{ secrets.FTP_HOST }}
+          FTP_USER: ${{ secrets.FTP_USERNAME }}
+          FTP_PASS: ${{ secrets.FTP_PASSWORD }}
+          FTP_PATH: ${{ secrets.FTP_PATH }}
+        run: |
+          sudo apt-get update && sudo apt-get install -y lftp
+          lftp -u "$FTP_USER","$FTP_PASS" "$FTP_HOST" <<EOF
+          set ftp:ssl-force true
+          set ssl:verify-certificate no
+          cd $FTP_PATH
+          put dashboard/data.json
+          put dashboard/data.js
+          bye
+          EOF
